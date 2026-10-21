@@ -1,0 +1,12 @@
+{
+    "geode": "4.0.0",
+    "id": "yourdev.predictive-input-buffer",
+    "name": "Predictive Input Buffer",
+    "version": "1.0.0",
+    "developer": "YourDev",
+    "description": "Stores early tap inputs and flushes them at the correct collision frame for orbs, pads, and portals. Five configurable buffer stages.",
+    "tags": ["gameplay"],
+    "gd": {
+        "android": "2.2081"
+    }
+}
