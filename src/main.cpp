@@ -15,7 +15,6 @@ struct StageConfig {
     int wave;
 };
 
-// Cấu hình 5 Stage (Stage 5 là OFF ở index 4)
 static constexpr std::array<StageConfig, 5> kStages = {{
     { 2, 2 },
     { 4, 4 },
@@ -25,7 +24,7 @@ static constexpr std::array<StageConfig, 5> kStages = {{
 }};
 
 namespace InputBufferState {
-    int stage = 0; // 0 đến 4
+    int stage = 0;
     bool inLevel = false;
     bool isEditor = false;
     int tick = 0;
@@ -63,12 +62,9 @@ namespace InputBufferState {
 
     void cycleStage() {
         stage = (stage + 1) % 5;
-        // Dùng CCLog chuẩn C++ thuần, tuyệt đối không đụng vào fmtlib
-        CCLog("[PredictiveBuffer] Stage changed");
     }
 }
 
-// Hiển thị thông báo ngắn trên màn hình chơi khi đổi Stage
 static void showHUD() {
     auto* pl = PlayLayer::get();
     if (!pl) return;
@@ -84,6 +80,8 @@ static void showHUD() {
     }
 
     auto* lbl = CCLabelBMFont::create(text.c_str(), "chatFont.fnt");
+    if (!lbl) return;
+    
     lbl->setScale(0.7f);
     lbl->setTag(8310);
 
@@ -151,4 +149,77 @@ struct ModBaseGameLayer : Modify<ModBaseGameLayer, GJBaseGameLayer> {
             return;
         }
 
-        if (!pushing
+        if (!pushing && !wave) {
+            GJBaseGameLayer::handleButton(pushing, button, isPlayer1);
+            return;
+        }
+
+        pend = { true, button, pushing, InputBufferState::tick };
+    }
+
+    void collisionCheckObjects(PlayerObject* player, CCArray* arr, float p2, float p3) {
+        if (InputBufferState::inLevel && !InputBufferState::isEditor && arr && arr->count() > 0) {
+            auto* pl = PlayLayer::get();
+            bool isP1 = pl && (player == pl->m_player1);
+            auto& pend = isP1 ? InputBufferState::p1 : InputBufferState::p2;
+
+            if (pend.active) {
+                for (uint32_t i = 0; i < arr->count(); ++i) {
+                    auto* obj = typeinfo_cast<EffectGameObject*>(arr->objectAtIndex(i));
+                    if (!obj) continue;
+                    if (!GJBaseGameLayer::canBeActivatedByPlayer(player, obj)) continue;
+
+                    InputBufferState::fire(this, pend, isP1);
+                    break;
+                }
+            }
+        }
+        GJBaseGameLayer::collisionCheckObjects(player, arr, p2, p3);
+    }
+};
+
+struct ModPlayerObject : Modify<ModPlayerObject, PlayerObject> {
+    void update(float dt) {
+        PlayerObject::update(dt);
+        if (!InputBufferState::inLevel || InputBufferState::isEditor) return;
+
+        auto* pl = PlayLayer::get();
+        if (!pl) return;
+
+        bool isP1 = (this == pl->m_player1);
+        if (isP1) InputBufferState::tick++;
+
+        auto& pend = isP1 ? InputBufferState::p1 : InputBufferState::p2;
+        if (!pend.active) return;
+
+        bool wave = (m_gamemode == IconType::Wave);
+        int limit = InputBufferState::getLimit(wave);
+        int age = InputBufferState::tick - pend.frame0;
+
+        if (limit > 0 && age >= limit) {
+            InputBufferState::fire(static_cast<GJBaseGameLayer*>(pl), pend, isP1);
+        }
+    }
+};
+
+struct ModPauseLayer : Modify<ModPauseLayer, PauseLayer> {
+    void customSetup() {
+        PauseLayer::customSetup();
+
+        auto* lbl = CCLabelBMFont::create("Buffer Stage", "bigFont.fnt");
+        if (lbl) {
+            lbl->setScale(0.4f);
+            auto* btn = CCMenuItemExt::createSpriteExtra(lbl, [this](auto*) {
+                InputBufferState::cycleStage();
+                showHUD();
+            });
+
+            auto* menu = CCMenu::create();
+            menu->addChild(btn);
+
+            auto ws = CCDirector::get()->getWinSize();
+            menu->setPosition({ws.width * 0.5f, 25.f});
+            this->addChild(menu, 10);
+        }
+    }
+};
