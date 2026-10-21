@@ -1,225 +1,161 @@
 #include <Geode/Geode.hpp>
-#include <Geode/modify/GJBaseGameLayer.hpp>
-#include <Geode/modify/PlayerObject.hpp>
 #include <Geode/modify/PlayLayer.hpp>
-#include <Geode/modify/LevelEditorLayer.hpp>
-#include <Geode/modify/GameObject.hpp>
 #include <Geode/modify/PauseLayer.hpp>
-#include <array>
-#include <string>
+#include <Geode/modify/GJBaseGameLayer.hpp>
 
 using namespace geode::prelude;
 
-struct StageConfig {
-    int all;
-    int wave;
+static int s_currentStage = 1;
+
+inline int getStageTicks(int stage, bool isWave) {
+    switch (stage) {
+        case 1: return 2;
+        case 2: return 4;
+        case 3: return 8;
+        case 4: return isWave ? 8 : 16;
+        case 5: default: return 0;
+    }
+}
+
+inline const char* getStageName(int stage) {
+    switch (stage) {
+        case 1: return "Stage 1 (2 ticks)";
+        case 2: return "Stage 2 (4 ticks)";
+        case 3: return "Stage 3 (8 ticks)";
+        case 4: return "Stage 4 (16/8 ticks)";
+        case 5: return "Stage 5 (OFF)";
+        default: return "Stage Unknown";
+    }
+}
+
+void showStageNotification(PlayLayer* playLayer, int stage) {
+    if (!playLayer) return;
+    std::string msg = "Predictive Buffer: ";
+    msg += getStageName(stage);
+    Notification::create(msg, NotificationIcon::Info)->show();
+}
+
+struct BufferedInput {
+    bool down;
+    int button;
+    bool isPlayer1;
+    int ticksRemaining;
 };
 
-static constexpr std::array<StageConfig, 5> kStages = {{
-    { 2, 2 },
-    { 4, 4 },
-    { 8, 8 },
-    { 16, 8 },
-    { 0, 0 }
-}};
-
-namespace InputBufferState {
-    int stage = 0;
-    bool inLevel = false;
-    bool isEditor = false;
-    int tick = 0;
-    bool replaying = false;
-
-    struct PendingInput {
-        bool active = false;
-        int button = 0;
-        bool pushing = true;
-        int frame0 = 0;
+class $modify(PredictiveGameLayer, GJBaseGameLayer) {
+    struct Fields {
+        std::vector<BufferedInput> bufferedInputs;
+        bool isInternalCall = false;
     };
-    PendingInput p1, p2;
 
-    int getLimit(bool wave) {
-        if (stage >= 4) return 0;
-        return wave ? kStages[stage].wave : kStages[stage].all;
-    }
-
-    void reset() {
-        tick = 0;
-        p1 = {};
-        p2 = {};
-    }
-
-    void fire(GJBaseGameLayer* gl, PendingInput& pend, bool isP1) {
-        if (!pend.active) return;
-        int btn = pend.button;
-        bool push = pend.pushing;
-        pend = {};
-
-        replaying = true;
-        gl->handleButton(push, btn, isP1);
-        replaying = false;
-    }
-
-    void cycleStage() {
-        stage = (stage + 1) % 5;
-    }
-}
-
-static void showHUD() {
-    auto* pl = PlayLayer::get();
-    if (!pl) return;
-
-    if (auto* old = pl->getChildByTag(8310)) {
-        old->removeFromParent();
-    }
-
-    std::string text = "Buffer Stage: ";
-    text += std::to_string(InputBufferState::stage + 1);
-    if (InputBufferState::stage == 4) {
-        text = "Buffer: OFF";
-    }
-
-    auto* lbl = CCLabelBMFont::create(text.c_str(), "chatFont.fnt");
-    if (!lbl) return;
-    
-    lbl->setScale(0.7f);
-    lbl->setTag(8310);
-
-    auto ws = CCDirector::get()->getWinSize();
-    lbl->setPosition({ws.width * 0.5f, ws.height - 40.f});
-    pl->addChild(lbl, 999);
-
-    lbl->runAction(CCSequence::create(
-        CCDelayTime::create(1.5f),
-        CCFadeOut::create(0.3f),
-        CCRemoveSelf::create(),
-        nullptr
-    ));
-}
-
-struct ModPlayLayer : Modify<ModPlayLayer, PlayLayer> {
-    bool init(GJGameLevel* level) {
-        if (!PlayLayer::init(level)) return false;
-        InputBufferState::reset();
-        InputBufferState::inLevel = true;
-        InputBufferState::isEditor = false;
-        return true;
-    }
-
-    void destroyPlayer(PlayerObject* player, GameObject* obj) {
-        InputBufferState::p1 = {};
-        InputBufferState::p2 = {};
-        PlayLayer::destroyPlayer(player, obj);
-    }
-
-    void onQuit() {
-        InputBufferState::inLevel = false;
-        InputBufferState::reset();
-        PlayLayer::onQuit();
-    }
-};
-
-struct ModEditorLayer : Modify<ModEditorLayer, LevelEditorLayer> {
-    bool init(GJGameLevel* lvl, bool unk) {
-        InputBufferState::isEditor = true;
-        return LevelEditorLayer::init(lvl, unk);
-    }
-};
-
-struct ModBaseGameLayer : Modify<ModBaseGameLayer, GJBaseGameLayer> {
-    void handleButton(bool pushing, int button, bool isPlayer1) {
-        if (InputBufferState::replaying || !InputBufferState::inLevel || InputBufferState::isEditor) {
-            GJBaseGameLayer::handleButton(pushing, button, isPlayer1);
+    void handleButton(bool down, int button, bool isPlayer1) {
+        if (s_currentStage == 5 || m_fields->isInternalCall) {
+            GJBaseGameLayer::handleButton(down, button, isPlayer1);
             return;
         }
 
-        auto* pl = PlayLayer::get();
-        PlayerObject* player = pl ? (isPlayer1 ? pl->m_player1 : pl->m_player2) : nullptr;
-        bool wave = player && (player->m_gamemode == IconType::Wave);
-        int limit = InputBufferState::getLimit(wave);
+        bool isWave = false;
+        if (isPlayer1 && m_player1) {
+            isWave = m_player1->m_isWave;
+        } else if (!isPlayer1 && m_player2) {
+            isWave = m_player2->m_isWave;
+        }
 
-        if (limit == 0) {
-            GJBaseGameLayer::handleButton(pushing, button, isPlayer1);
+        int maxTicks = getStageTicks(s_currentStage, isWave);
+        if (maxTicks <= 0) {
+            GJBaseGameLayer::handleButton(down, button, isPlayer1);
             return;
         }
 
-        auto& pend = isPlayer1 ? InputBufferState::p1 : InputBufferState::p2;
-        if (pend.active) {
-            GJBaseGameLayer::handleButton(pushing, button, isPlayer1);
-            return;
-        }
-
-        if (!pushing && !wave) {
-            GJBaseGameLayer::handleButton(pushing, button, isPlayer1);
-            return;
-        }
-
-        pend = { true, button, pushing, InputBufferState::tick };
+        m_fields->bufferedInputs.push_back({down, button, isPlayer1, maxTicks});
     }
 
-    void collisionCheckObjects(PlayerObject* player, CCArray* arr, float p2, float p3) {
-        if (InputBufferState::inLevel && !InputBufferState::isEditor && arr && arr->count() > 0) {
-            auto* pl = PlayLayer::get();
-            bool isP1 = pl && (player == pl->m_player1);
-            auto& pend = isP1 ? InputBufferState::p1 : InputBufferState::p2;
+    void update(float dt) {
+        GJBaseGameLayer::update(dt);
 
-            if (pend.active) {
-                for (uint32_t i = 0; i < arr->count(); ++i) {
-                    auto* obj = typeinfo_cast<EffectGameObject*>(arr->objectAtIndex(i));
-                    if (!obj) continue;
-                    if (!GJBaseGameLayer::canBeActivatedByPlayer(player, obj)) continue;
+        if (s_currentStage == 5 || m_fields->bufferedInputs.empty()) {
+            return;
+        }
 
-                    InputBufferState::fire(this, pend, isP1);
-                    break;
-                }
+        auto& inputs = m_fields->bufferedInputs;
+        for (auto it = inputs.begin(); it != inputs.end();) {
+            it->ticksRemaining--;
+
+            if (it->ticksRemaining <= 0) {
+                m_fields->isInternalCall = true;
+                this->handleButton(it->down, it->button, it->isPlayer1);
+                m_fields->isInternalCall = false;
+
+                it = inputs.erase(it);
+            } else {
+                ++it;
             }
         }
-        GJBaseGameLayer::collisionCheckObjects(player, arr, p2, p3);
     }
 };
 
-struct ModPlayerObject : Modify<ModPlayerObject, PlayerObject> {
-    void update(float dt) {
-        PlayerObject::update(dt);
-        if (!InputBufferState::inLevel || InputBufferState::isEditor) return;
-
-        auto* pl = PlayLayer::get();
-        if (!pl) return;
-
-        bool isP1 = (this == pl->m_player1);
-        if (isP1) InputBufferState::tick++;
-
-        auto& pend = isP1 ? InputBufferState::p1 : InputBufferState::p2;
-        if (!pend.active) return;
-
-        bool wave = (m_gamemode == IconType::Wave);
-        int limit = InputBufferState::getLimit(wave);
-        int age = InputBufferState::tick - pend.frame0;
-
-        if (limit > 0 && age >= limit) {
-            InputBufferState::fire(static_cast<GJBaseGameLayer*>(pl), pend, isP1);
-        }
-    }
-};
-
-struct ModPauseLayer : Modify<ModPauseLayer, PauseLayer> {
+class $modify(PredictivePauseLayer, PauseLayer) {
     void customSetup() {
         PauseLayer::customSetup();
 
-        auto* lbl = CCLabelBMFont::create("Buffer Stage", "bigFont.fnt");
-        if (lbl) {
-            lbl->setScale(0.4f);
-            auto* btn = CCMenuItemExt::createSpriteExtra(lbl, [this](auto*) {
-                InputBufferState::cycleStage();
-                showHUD();
-            });
+        auto winSize = CCDirector::get()->getWinSize();
 
-            auto* menu = CCMenu::create();
-            menu->addChild(btn);
+        auto menu = CCMenu::create();
+        menu->setPosition({winSize.width / 2.f, 35.f});
+        menu->setContentSize({300.f, 50.f});
+        menu->setLayout(RowLayout::create()->setGap(10.f));
 
-            auto ws = CCDirector::get()->getWinSize();
-            menu->setPosition({ws.width * 0.5f, 25.f});
-            this->addChild(menu, 10);
+        auto btnSprite = ButtonSprite::create("Stage 1", 110, true, "goldFont.fnt", "GJ_button_01.png", 30, 0.7f);
+        
+        auto btn = CCMenuItemSpriteExtra::create(
+            btnSprite,
+            this,
+            menu_selector(PredictivePauseLayer::onChangeStageClicked)
+        );
+        btn->setID("predictive-stage-btn"_spr);
+        menu->addChild(btn);
+        menu->updateLayout();
+
+        this->addChild(menu, 10);
+        updateButtonText();
+    }
+
+    void updateButtonText() {
+        auto btn = typeinfo_cast<CCMenuItemSpriteExtra*>(this->getChildByID("predictive-stage-btn"));
+        if (!btn) return;
+
+        std::string labelText = "Stage ";
+        labelText += std::to_string(s_currentStage);
+        if (s_currentStage == 5) {
+            labelText = "Stage 5 (OFF)";
         }
+
+        auto newSprite = ButtonSprite::create(labelText.c_str(), 120, true, "goldFont.fnt", "GJ_button_01.png", 30, 0.7f);
+        btn->setNormalImage(newSprite);
+    }
+
+    void onChangeStageClicked(CCObject*) {
+        s_currentStage++;
+        if (s_currentStage > 5) {
+            s_currentStage = 1;
+        }
+
+        Mod::get()->setSavedValue("current-stage", s_currentStage);
+        updateButtonText();
+
+        std::string msg = "Switched to: ";
+        msg += getStageName(s_currentStage);
+        Notification::create(msg, NotificationIcon::Info)->show();
+    }
+};
+
+class $modify(PredictivePlayLayer, PlayLayer) {
+    bool init(GJGameLevel* level) {
+        if (!PlayLayer::init(level)) return false;
+
+        s_currentStage = Mod::get()->getSavedValue<int>("current-stage", 1);
+        showStageNotification(this, s_currentStage);
+
+        return true;
     }
 };
