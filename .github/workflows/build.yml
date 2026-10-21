@@ -1,0 +1,14 @@
+name: Build Geode Mod
+
+on:
+  push:
+    branches: [ "main", "master" ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build Mod
+    uses: geode-sdk/build-geode-mod/.github/workflows/build.yml@v1.9.0
+    with:
+      build-config: Release
+      targets: '["android64"]'
