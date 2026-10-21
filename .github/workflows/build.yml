@@ -1,25 +1,10 @@
 name: Build Geode Mod
 
 on:
-  push:
-    branches: [ "main", "master" ]
   workflow_dispatch:
+  push:
+    branches: [main, master]
 
 jobs:
   build:
-    name: Build Mod
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Build Geode Mod
-        uses: geode-sdk/build-geode-mod@main
-        with:
-          build-config: Release
-          platform: android64
-
-      - name: Upload Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: geode-mod-android
-          path: "*.geode"
+    uses: geode-sdk/geode/.github/workflows/build-mod.yml@main
